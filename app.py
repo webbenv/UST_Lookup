@@ -1,22 +1,21 @@
 import streamlit as st
 import pandas as pd
-from pandas.errors import EmptyDataError
 import re
-from pathlib import Path
 
-# -----------------------------------------------------------------------------
-# Streamlit config
-# -----------------------------------------------------------------------------
-st.set_page_config(page_title="Webb Environmental - UST Lookup", layout="wide")
+# ---------------------------------------------------------
+# 🧱 Streamlit configuration
+# ---------------------------------------------------------
+st.set_page_config(page_title="Webb Environmental - UST Facility Lookup", layout="wide")
 st.title("🛢️ Webb Environmental – UST Facility Lookup")
 
-# -----------------------------------------------------------------------------
-# Auto-load CSV/XLSX data from GitHub (no uploads)
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------
+# 🌐 Base URL for hosted GitHub data
+# ---------------------------------------------------------
 BASE_URL = "https://raw.githubusercontent.com/webbenv/UST_Lookup/main/data/"
 
 @st.cache_data
 def load_data():
+    """Loads all data files automatically from GitHub."""
     try:
         tanks = pd.read_csv(BASE_URL + "tanks.csv", low_memory=False)
         owner = pd.read_csv(BASE_URL + "owner.csv", low_memory=False)
@@ -30,32 +29,35 @@ def load_data():
 
 tanks, owner, ustpipe, usttankmaterials, ustrelease = load_data()
 
-# -----------------------------------------------------------------------------
-# Search input
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------
+# 🧹 Normalize columns (important for search consistency)
+# ---------------------------------------------------------
+for df in [tanks, owner, ustpipe, usttankmaterials, ustrelease]:
+    if not df.empty:
+        df.columns = df.columns.str.lower().str.strip()
+
+# ---------------------------------------------------------
+# 🔍 Search box
+# ---------------------------------------------------------
 facility_input = st.text_input("Search by Facility ID, Site Name, or Address:")
 
-# -----------------------------------------------------------------------------
-# Helper: Find facility column dynamically
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------
+# 🧠 Helper: find correct facility id column dynamically
+# ---------------------------------------------------------
 def find_facility_column(df):
     if df is None or df.empty or not hasattr(df, "columns"):
         return None
-    facility_patterns = [
-        "facility id", "facilityid", "facid", "fac_id", "fac id", "fac-id",
-        "facility number", "facility_no", "fac no", "facno"
-    ]
-    for pat in facility_patterns:
-        if pat in df.columns:
-            return pat
     for col in df.columns:
         if "facility" in col.lower() and "id" in col.lower():
             return col
+    for col in df.columns:
+        if col.lower() in ["facid", "facilityid", "fac_id", "fac id"]:
+            return col
     return None
 
-# -----------------------------------------------------------------------------
-# Lookup logic
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------
+# 🧾 Facility lookup
+# ---------------------------------------------------------
 if facility_input:
     if tanks.empty or owner.empty:
         st.error("Data not loaded — please verify your GitHub data folder.")
@@ -63,31 +65,46 @@ if facility_input:
         facility_col_tanks = find_facility_column(tanks)
         facility_col_owner = find_facility_column(owner)
 
+        fid = str(facility_input).strip()
         tanks_filtered = pd.DataFrame()
-        try:
-            fid = int(facility_input)
-            if facility_col_tanks in tanks.columns:
-                tanks_filtered = tanks[tanks[facility_col_tanks] == fid]
-        except ValueError:
+
+        # Match by Facility ID (as string)
+        if facility_col_tanks in tanks.columns:
+            tanks_filtered = tanks[tanks[facility_col_tanks].astype(str).str.strip() == fid]
+
+        # Fallback: search by name or address if ID not found
+        if tanks_filtered.empty:
             if "facility name" in tanks.columns:
-                tanks_filtered = tanks[
-                    tanks["facility name"].astype(str).str.contains(facility_input, case=False, na=False)
-                ]
+                tanks_filtered = tanks[tanks["facility name"].astype(str).str.contains(fid, case=False, na=False)]
+            elif "address" in tanks.columns:
+                tanks_filtered = tanks[tanks["address"].astype(str).str.contains(fid, case=False, na=False)]
 
         if tanks_filtered.empty:
             st.warning("No facility found for that ID or name.")
         else:
-            st.markdown("### 🧾 Facility Summary")
-            st.write(tanks_filtered.head(10))
+            facility_id = tanks_filtered[facility_col_tanks].iloc[0] if facility_col_tanks else "Unknown"
 
-            if facility_col_owner and facility_col_tanks:
-                owner_filtered = owner[
-                    owner[facility_col_owner].isin(tanks_filtered[facility_col_tanks])
-                ]
+            st.markdown(f"### 🧾 Facility Summary for ID: `{facility_id}`")
+            st.dataframe(tanks_filtered.head(10))
+
+            # ---------------------------------------------------------
+            # 👤 Owner info
+            # ---------------------------------------------------------
+            if facility_col_owner in owner.columns:
+                owner_filtered = owner[owner[facility_col_owner].astype(str).str.strip() == str(facility_id)]
                 if not owner_filtered.empty:
                     st.markdown("### 👤 Owner Information")
-                    st.write(owner_filtered.head(10))
+                    st.dataframe(owner_filtered.head(10))
 
-            st.success("✅ Lookup completed successfully.")
+            # ---------------------------------------------------------
+            # ⛽ Active tanks
+            # ---------------------------------------------------------
+            if "tank status" in tanks_filtered.columns:
+                active_tanks = tanks_filtered[tanks_filtered["tank status"].astype(str).str.contains("CURR IN USE", case=False, na=False)]
+                if not active_tanks.empty:
+                    st.markdown("### ⛽ Active Tanks")
+                    st.dataframe(active_tanks[["tank number", "contents", "capacity", "install date", "tank status"]])
+                else:
+                    st.info("No active tanks found for this facility.")
 else:
     st.info("Enter a Facility ID, Site Name, or Address to begin your lookup.")
