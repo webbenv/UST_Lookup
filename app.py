@@ -251,14 +251,28 @@ if facility_input:
     def extract_rd(df, clean_num, prefix):
         if df.empty or "clean_tank_number" not in df.columns:
             return []
-        r = df[df["clean_tank_number"] == clean_num]
-        if r.empty:
+        subset = df[df["clean_tank_number"] == clean_num]
+        # Prefer same facility if available
+        if not subset.empty and "facility id" in subset.columns:
+            try:
+                target_digits = re.sub(r"\D", "", str(facility_id))
+                ser_digits = subset["facility id"].astype(str).str.replace(r"\D", "", regex=True)
+                subset2 = subset[ser_digits == target_digits]
+                if not subset2.empty:
+                    subset = subset2
+            except Exception:
+                subset2 = subset[subset["facility id"].astype(str).str.strip() == str(facility_id)]
+                if not subset2.empty:
+                    subset = subset2
+        if subset.empty:
             return []
         methods = []
-        for c in r.columns:
+        for c in subset.columns:
             cl = str(c).lower()
-            if cl.startswith(prefix) and str(r.iloc[0][c]).strip().upper() == "Y":
-                methods.append(c[len(prefix):].strip().title())
+            if cl.startswith(prefix):
+                colvals = subset[c].astype(str).str.strip().str.upper()
+                if (colvals == "Y").any():
+                    methods.append(c[len(prefix):].strip().title())
         return methods
 
     if active_tanks.empty:
