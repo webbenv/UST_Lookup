@@ -286,19 +286,82 @@ if facility_input:
             install_date = row.get("install date", "N/A")
             status = row.get("tank status", "N/A")
 
-            # Tank Double Wall from usttankmaterials "Column L" (12th col, index 11)
-            double_wall = "Unknown"
+            # Tank Double Wall (robust): prefer named column and constrain by facility
+            double_wall = "No"
             mat_row = pd.DataFrame()
             if not usttankmaterials.empty and "clean_tank_number" in usttankmaterials.columns:
                 mat_row = usttankmaterials[usttankmaterials["clean_tank_number"] == clean_num]
-            if not mat_row.empty and mat_row.shape[1] > 11:
-                col_L = mat_row.iloc[0, 11]
-                double_wall = "Yes" if str(col_L).strip().upper() == "Y" else "No"
+                # Narrow by facility if possible
+                if not mat_row.empty and "facility id" in mat_row.columns:
+                    try:
+                        target_digits = re.sub(r"\D", "", str(facility_id))
+                        ser_digits = mat_row["facility id"].astype(str).str.replace(r"\D", "", regex=True)
+                        mr2 = mat_row[ser_digits == target_digits]
+                        if not mr2.empty:
+                            mat_row = mr2
+                    except Exception:
+                        mr2 = mat_row[mat_row["facility id"].astype(str).str.strip() == str(facility_id)]
+                        if not mr2.empty:
+                            mat_row = mr2
+                elif not mat_row.empty and "owner id" in mat_row.columns and "owner id" in owner_filtered.columns and not owner_filtered.empty:
+                    try:
+                        oid = str(owner_filtered["owner id"].iloc[-1]).strip()
+                        mr2 = mat_row[mat_row["owner id"].astype(str).str.strip() == oid]
+                        if not mr2.empty:
+                            mat_row = mr2
+                    except Exception:
+                        pass
+            # Determine double wall value
+            if not mat_row.empty:
+                # Prefer named column
+                dw_col = None
+                for cand in [
+                    "tank material double walled",
+                    "double walled",
+                    "double wall",
+                ]:
+                    if cand in mat_row.columns:
+                        dw_col = cand
+                        break
+                if dw_col:
+                    double_wall = "Yes" if is_truthy(mat_row.iloc[0][dw_col]) else "No"
+                elif mat_row.shape[1] > 11:
+                    # Fallback to legacy Column L (index 11)
+                    col_L = mat_row.iloc[0, 11]
+                    double_wall = "Yes" if str(col_L).strip().upper() == "Y" else "No"
 
-            # Piping Material: scan all "pipe material ..." columns for truthy flags
+            # Piping Type + Material: scan columns with robust matching (constrain to this facility)
             pipe_material = "Unknown"
+            piping_type = "Unknown"
             if not ustpipe.empty and "clean_tank_number" in ustpipe.columns:
                 pr = ustpipe[ustpipe["clean_tank_number"] == clean_num]
+                # Narrow by facility if possible to avoid cross-facility collisions on tank numbers
+                if not pr.empty and "facility id" in pr.columns:
+                    try:
+                        target_digits = re.sub(r"\D", "", str(facility_id))
+                        ser_digits = pr["facility id"].astype(str).str.replace(r"\D", "", regex=True)
+                        pr2 = pr[ser_digits == target_digits]
+                        if not pr2.empty:
+                            pr = pr2
+                    except Exception:
+                        pr2 = pr[pr["facility id"].astype(str).str.strip() == str(facility_id)]
+                        if not pr2.empty:
+                            pr = pr2
+                elif not pr.empty and "owner id" in pr.columns and "owner id" in owner_filtered.columns and not owner_filtered.empty:
+                    # Fallback: use owner id if facility id is unavailable in ustpipe
+                    try:
+                        oid = str(owner_filtered["owner id"].iloc[-1]).strip()
+                        pr2 = pr[pr["owner id"].astype(str).str.strip() == oid]
+                        if not pr2.empty:
+                            pr = pr2
+                    except Exception:
+                        pass
+                # Piping Type
+                pt_col = pick(pr, ["pipingtype", "piping type"]) if not pr.empty else None
+                if pt_col:
+                    val = str(pr.iloc[0][pt_col]).strip()
+                    piping_type = val.title() if val else "Unknown"
+                # Piping Materials
                 mats = []
                 if not pr.empty:
                     for col in pr.columns:
@@ -307,7 +370,19 @@ if facility_input:
                             if is_truthy(pr.iloc[0][col]):
                                 raw = str(col)[len("pipe material"):].strip()
                                 raw = re.sub(r"^[\s:,-]+", "", raw)
-                                mats.append(raw.title() or "Unknown")
+                                # Include "Other Specify" text when present
+                                if raw.lower() == "other":
+                                    spec = ""
+                                    try:
+                                        spec = str(pr.iloc[0].get("pipe material other specify", "")).strip()
+                                    except Exception:
+                                        spec = ""
+                                    if spec:
+                                        mats.append(f"Other ({spec})")
+                                    else:
+                                        mats.append("Other")
+                                else:
+                                    mats.append(raw.title() or "Unknown")
                 if mats:
                     pipe_material = ", ".join(mats)
                 else:
@@ -330,6 +405,7 @@ if facility_input:
                 f"- **Install Date:** {install_date}  \n"
                 f"- **Status:** {status}  \n"
                 f"- **Double Wall:** {double_wall}  \n"
+                f"- **Piping Type:** {piping_type}  \n"
                 f"- **Tank Material:** Fiberglass  \n"
                 f"- **Piping Material:** {pipe_material}  \n"
                 f"**Tank RD Methods:** {', '.join(tank_rd) if tank_rd else 'Not Listed'}  \n"
