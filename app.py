@@ -286,31 +286,43 @@ if facility_input:
             install_date = row.get("install date", "N/A")
             status = row.get("tank status", "N/A")
 
-            # Tank Double Wall (robust): prefer named column and constrain by facility
+            # Tank Double Wall (robust): prefer named column and constrain by facility; prefer current/exact row
             double_wall = "No"
             mat_row = pd.DataFrame()
             if not usttankmaterials.empty and "clean_tank_number" in usttankmaterials.columns:
-                mat_row = usttankmaterials[usttankmaterials["clean_tank_number"] == clean_num]
+                mat_candidates = usttankmaterials[usttankmaterials["clean_tank_number"] == clean_num]
                 # Narrow by facility if possible
-                if not mat_row.empty and "facility id" in mat_row.columns:
+                if not mat_candidates.empty and "facility id" in mat_candidates.columns:
                     try:
                         target_digits = re.sub(r"\D", "", str(facility_id))
-                        ser_digits = mat_row["facility id"].astype(str).str.replace(r"\D", "", regex=True)
-                        mr2 = mat_row[ser_digits == target_digits]
+                        ser_digits = mat_candidates["facility id"].astype(str).str.replace(r"\D", "", regex=True)
+                        mr2 = mat_candidates[ser_digits == target_digits]
                         if not mr2.empty:
-                            mat_row = mr2
+                            mat_candidates = mr2
                     except Exception:
-                        mr2 = mat_row[mat_row["facility id"].astype(str).str.strip() == str(facility_id)]
+                        mr2 = mat_candidates[mat_candidates["facility id"].astype(str).str.strip() == str(facility_id)]
                         if not mr2.empty:
-                            mat_row = mr2
-                elif not mat_row.empty and "owner id" in mat_row.columns and "owner id" in owner_filtered.columns and not owner_filtered.empty:
+                            mat_candidates = mr2
+                elif not mat_candidates.empty and "owner id" in mat_candidates.columns and "owner id" in owner_filtered.columns and not owner_filtered.empty:
                     try:
                         oid = str(owner_filtered["owner id"].iloc[-1]).strip()
-                        mr2 = mat_row[mat_row["owner id"].astype(str).str.strip() == oid]
+                        mr2 = mat_candidates[mat_candidates["owner id"].astype(str).str.strip() == oid]
                         if not mr2.empty:
-                            mat_row = mr2
+                            mat_candidates = mr2
                     except Exception:
                         pass
+                # Prefer exact tank number match over legacy prefixes (e.g., '1' over 'R1')
+                if not mat_candidates.empty and "tank number" in mat_candidates.columns:
+                    exact = mat_candidates[mat_candidates["tank number"].astype(str).str.strip() == str(tank_num)]
+                    if not exact.empty:
+                        mat_candidates = exact
+                # Prefer current in-use status if available
+                if not mat_candidates.empty and "tank status" in mat_candidates.columns:
+                    cur = mat_candidates[mat_candidates["tank status"].astype(str).str.contains("CURR IN USE", case=False, na=False)]
+                    if not cur.empty:
+                        mat_candidates = cur
+                # Choose first remaining
+                mat_row = mat_candidates.head(1)
             # Determine double wall value
             if not mat_row.empty:
                 # Prefer named column
@@ -330,32 +342,44 @@ if facility_input:
                     col_L = mat_row.iloc[0, 11]
                     double_wall = "Yes" if str(col_L).strip().upper() == "Y" else "No"
 
-            # Piping Type + Material: scan columns with robust matching (constrain to this facility)
+            # Piping Type + Material: scan columns with robust matching (constrain to this facility; prefer current/ exact row)
             pipe_material = "Unknown"
             piping_type = "Unknown"
             if not ustpipe.empty and "clean_tank_number" in ustpipe.columns:
-                pr = ustpipe[ustpipe["clean_tank_number"] == clean_num]
+                pr_candidates = ustpipe[ustpipe["clean_tank_number"] == clean_num]
                 # Narrow by facility if possible to avoid cross-facility collisions on tank numbers
-                if not pr.empty and "facility id" in pr.columns:
+                if not pr_candidates.empty and "facility id" in pr_candidates.columns:
                     try:
                         target_digits = re.sub(r"\D", "", str(facility_id))
-                        ser_digits = pr["facility id"].astype(str).str.replace(r"\D", "", regex=True)
-                        pr2 = pr[ser_digits == target_digits]
+                        ser_digits = pr_candidates["facility id"].astype(str).str.replace(r"\D", "", regex=True)
+                        pr2 = pr_candidates[ser_digits == target_digits]
                         if not pr2.empty:
-                            pr = pr2
+                            pr_candidates = pr2
                     except Exception:
-                        pr2 = pr[pr["facility id"].astype(str).str.strip() == str(facility_id)]
+                        pr2 = pr_candidates[pr_candidates["facility id"].astype(str).str.strip() == str(facility_id)]
                         if not pr2.empty:
-                            pr = pr2
-                elif not pr.empty and "owner id" in pr.columns and "owner id" in owner_filtered.columns and not owner_filtered.empty:
+                            pr_candidates = pr2
+                elif not pr_candidates.empty and "owner id" in pr_candidates.columns and "owner id" in owner_filtered.columns and not owner_filtered.empty:
                     # Fallback: use owner id if facility id is unavailable in ustpipe
                     try:
                         oid = str(owner_filtered["owner id"].iloc[-1]).strip()
-                        pr2 = pr[pr["owner id"].astype(str).str.strip() == oid]
+                        pr2 = pr_candidates[pr_candidates["owner id"].astype(str).str.strip() == oid]
                         if not pr2.empty:
-                            pr = pr2
+                            pr_candidates = pr2
                     except Exception:
                         pass
+                # Prefer exact tank number row over legacy prefixes (e.g., '1' over 'R1')
+                if not pr_candidates.empty and "tank number" in pr_candidates.columns:
+                    exact = pr_candidates[pr_candidates["tank number"].astype(str).str.strip() == str(tank_num)]
+                    if not exact.empty:
+                        pr_candidates = exact
+                # Prefer current in-use status if present
+                if not pr_candidates.empty and "tank status" in pr_candidates.columns:
+                    cur = pr_candidates[pr_candidates["tank status"].astype(str).str.contains("CURR IN USE", case=False, na=False)]
+                    if not cur.empty:
+                        pr_candidates = cur
+                # Choose first remaining
+                pr = pr_candidates.head(1)
                 # Piping Type
                 pt_col = pick(pr, ["pipingtype", "piping type"]) if not pr.empty else None
                 if pt_col:
